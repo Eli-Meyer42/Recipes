@@ -35,7 +35,7 @@
     messagingSenderId: "333207859905",
     appId: "1:333207859905:web:bf9e234cf6ce50fa3b5a40"
   };
-  window.APP_BUILD = { n: 1, date: "24 Nov 2026" };
+  window.APP_BUILD = { n: 2, date: "24 Nov 2026" };
 </script>
 <style>
   html, body { background: #FAF6EF; }
@@ -546,6 +546,46 @@ function savePantry(items) {
   catch (e) { console.error('Failed to save pantry', e); }
 }
 
+// ---------- Go-to meals (the "what to cook" index) ----------
+// A lightweight, editable index of regular meals, grouped by meal type, separate
+// from the recipe book. Items are just names (+ optional detail); an item whose
+// name matches a saved recipe links through to it.
+const GOTOS_KEY = 'recipes_gotos_v1';
+const GOTOS_SEED = [
+  { id: 'g-breakfast', name: 'Breakfast', items: [
+    { id: 'gi-1', name: 'Pancakes', detail: '' },
+    { id: 'gi-2', name: 'French toast', detail: '' },
+    { id: 'gi-3', name: 'Shakshuka', detail: '' },
+    { id: 'gi-4', name: 'Omelette rice', detail: '' },
+  ]},
+  { id: 'g-lunch', name: 'Lunch', items: [
+    { id: 'gi-5', name: 'Cheesy pasta', detail: '' },
+    { id: 'gi-6', name: 'Poke bowl', detail: '' },
+    { id: 'gi-7', name: 'Tuna patties', detail: '' },
+    { id: 'gi-8', name: 'Pastrami sandwiches', detail: '' },
+    { id: 'gi-9', name: 'Sloppy joes', detail: '' },
+    { id: 'gi-10', name: 'Arayes', detail: '' },
+    { id: 'gi-11', name: 'Pizza bagels', detail: '' },
+  ]},
+  { id: 'g-dinner', name: 'Dinner', items: [
+    { id: 'gi-12', name: 'Fish', detail: 'Cooked fish with a side of rice' },
+    { id: 'gi-13', name: 'Pastrami', detail: 'Pastrami fried rice' },
+    { id: 'gi-14', name: 'Ground meat', detail: 'Burgers, Kebab, Meatballs, Spaghetti Bolognese' },
+    { id: 'gi-15', name: 'Chicken', detail: 'Paprika chicken, Lemon chicken, Sticky chicken, Schnitzel' },
+  ]},
+];
+function loadGotos() {
+  try {
+    const raw = localStorage.getItem(GOTOS_KEY);
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+  } catch (e) {}
+  return null;
+}
+function saveGotos(sections) {
+  try { localStorage.setItem(GOTOS_KEY, JSON.stringify(sections)); }
+  catch (e) { console.error('Failed to save go-to meals', e); }
+}
+
 // ---------- Backup / restore (data portability + cross-version, cross-device) ----------
 // One backup bundle gathers every persistent thing the app stores, stamped with a
 // schema version and a timestamp. Stored values are copied verbatim so the existing
@@ -557,7 +597,7 @@ const SYNC_REV_KEY = 'recipes_sync_rev'; // local data version for cloud sync; n
 // Any key starting with these prefixes is per-recipe data and gets backed up.
 const BACKUP_PREFIXES = ['recipes_checks_', 'recipes_method_view_'];
 // Resolved lazily (these key constants are defined later in the file).
-function backupExplicitKeys() { return [STORAGE_KEY, COLLECTIONS_KEY, PANTRY_KEY, SCRATCHPAD_KEY, VIEW_MODE_KEY]; }
+function backupExplicitKeys() { return [STORAGE_KEY, COLLECTIONS_KEY, PANTRY_KEY, GOTOS_KEY, SCRATCHPAD_KEY, VIEW_MODE_KEY]; }
 function backupNeverKeys() { return [AI_KEY_STORAGE, META_KEY, SYNC_REV_KEY]; } // never exported, synced, or overwritten
 
 function isBackupKey(k) {
@@ -4177,6 +4217,7 @@ function App() {
   const [recipes, setRecipesState] = useState([]);
   const [collections, setCollectionsState] = useState([]);
   const [pantry, setPantryState] = useState([]);
+  const [gotos, setGotosState] = useState([]);
   const [scales, setScales] = useState({}); // recipeId -> scale multiplier (view-only, session-only)
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState({ name: 'list' });
@@ -4191,6 +4232,7 @@ function App() {
   const recipesRef = useRef([]);
   const collectionsRef = useRef([]);
   const pantryRef = useRef([]);
+  const gotosRef = useRef([]);
 
   useEffect(() => {
     const stored = loadRecipes();
@@ -4204,6 +4246,11 @@ function App() {
     const pan = loadPantry();
     pantryRef.current = pan;
     setPantryState(pan);
+    const storedGotos = loadGotos();
+    const g = storedGotos || GOTOS_SEED;
+    gotosRef.current = g;
+    setGotosState(g);
+    if (!storedGotos) saveGotos(GOTOS_SEED); // seed the index on first run
     setLoading(false);
   }, []);
 
@@ -4233,6 +4280,42 @@ function App() {
     setPantryState(next);
   };
 
+  const mutateGotos = (fn) => {
+    const next = fn(gotosRef.current);
+    gotosRef.current = next;
+    saveGotos(next);
+    setGotosState(next);
+  };
+
+  // Go-to meal index actions.
+  const addGotoItem = (sectionId, name, detail) => {
+    const nm = (name || '').trim();
+    if (!nm) return;
+    mutateGotos(prev => prev.map(s => s.id === sectionId
+      ? { ...s, items: [...s.items, { id: newId(), name: nm, detail: (detail || '').trim() }] }
+      : s));
+  };
+  const removeGotoItem = (sectionId, itemId) => {
+    mutateGotos(prev => prev.map(s => s.id === sectionId
+      ? { ...s, items: s.items.filter(i => i.id !== itemId) }
+      : s));
+  };
+  const updateGotoItem = (sectionId, itemId, name, detail) => {
+    const nm = (name || '').trim();
+    if (!nm) return;
+    mutateGotos(prev => prev.map(s => s.id === sectionId
+      ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, name: nm, detail: (detail || '').trim() } : i) }
+      : s));
+  };
+  const addGotoSection = (name) => {
+    const nm = (name || '').trim();
+    if (!nm) return;
+    mutateGotos(prev => [...prev, { id: newId(), name: nm, items: [] }]);
+  };
+  const removeGotoSection = (sectionId) => {
+    mutateGotos(prev => prev.filter(s => s.id !== sectionId));
+  };
+
   // Re-read everything from storage into the live UI — used after a restore replaces
   // or merges the saved data underneath us.
   const reloadFromStorage = () => {
@@ -4240,6 +4323,7 @@ function App() {
     recipesRef.current = r; setRecipesState(r);
     const c = loadCollections(); collectionsRef.current = c; setCollectionsState(c);
     const p = loadPantry(); pantryRef.current = p; setPantryState(p);
+    const g = loadGotos() || GOTOS_SEED; gotosRef.current = g; setGotosState(g);
     setFreshInstall(false);
   };
 
@@ -4489,6 +4573,7 @@ function App() {
         onUpdateCollection={updateCollection}
         onDeleteCollection={deleteCollection}
         onOpenPantry={() => setView({ name: 'pantry' })}
+        onOpenGotos={() => setView({ name: 'gotos' })}
         freshInstall={freshInstall}
         onDismissFresh={() => setFreshInstall(false)}
         onImported={reloadFromStorage}
@@ -4586,6 +4671,22 @@ function App() {
         pantry={pantry}
         onAdd={addPantryItem}
         onRemove={removePantryItem}
+        onBack={() => setView({ name: 'list' })}
+      />
+    );
+  }
+
+  if (view.name === 'gotos') {
+    return (
+      <GotosView
+        sections={gotos}
+        recipes={recipes}
+        onAddItem={addGotoItem}
+        onRemoveItem={removeGotoItem}
+        onUpdateItem={updateGotoItem}
+        onAddSection={addGotoSection}
+        onRemoveSection={removeGotoSection}
+        onOpenRecipe={openRecipe}
         onBack={() => setView({ name: 'list' })}
       />
     );
@@ -4951,6 +5052,191 @@ function AiStatusModal({ onClose }) {
   );
 }
 
+// ---------- Go-to meals (the "what to cook" index) ----------
+function GotosView({ sections, recipes, onAddItem, onRemoveItem, onUpdateItem, onAddSection, onRemoveSection, onOpenRecipe, onBack }) {
+  const [addingTo, setAddingTo] = useState(null);     // sectionId currently showing the add row
+  const [draftName, setDraftName] = useState('');
+  const [draftDetail, setDraftDetail] = useState('');
+  const [editing, setEditing] = useState(null);       // itemId being edited
+  const [editName, setEditName] = useState('');
+  const [editDetail, setEditDetail] = useState('');
+  const [addingSection, setAddingSection] = useState(false);
+  const [sectionName, setSectionName] = useState('');
+  const [pick, setPick] = useState(null);             // { sectionName, name, detail } surprise result
+
+  const recipeFor = (name) => {
+    const n = (name || '').trim().toLowerCase();
+    if (!n) return null;
+    return (recipes || []).find(r => (r.title || '').trim().toLowerCase() === n) || null;
+  };
+
+  const allItems = [];
+  (sections || []).forEach(s => (s.items || []).forEach(it => allItems.push({ ...it, sectionName: s.name })));
+
+  const surprise = () => {
+    if (allItems.length === 0) return;
+    let choice = allItems[Math.floor(Math.random() * allItems.length)];
+    // avoid repeating the same pick back to back when possible
+    if (pick && allItems.length > 1) {
+      let guard = 0;
+      while (choice.id === pick.id && guard < 8) { choice = allItems[Math.floor(Math.random() * allItems.length)]; guard++; }
+    }
+    setPick(choice);
+  };
+
+  const startAdd = (sectionId) => { setAddingTo(sectionId); setDraftName(''); setDraftDetail(''); };
+  const commitAdd = (sectionId) => {
+    if (!draftName.trim()) { setAddingTo(null); return; }
+    onAddItem(sectionId, draftName, draftDetail);
+    setDraftName(''); setDraftDetail('');
+    // keep the add row open for quick multiple entries
+  };
+
+  const startEdit = (it) => { setEditing(it.id); setEditName(it.name); setEditDetail(it.detail || ''); };
+  const commitEdit = (sectionId, itemId) => {
+    if (editName.trim()) onUpdateItem(sectionId, itemId, editName, editDetail);
+    setEditing(null);
+  };
+
+  const pickRecipe = pick ? recipeFor(pick.name) : null;
+
+  return (
+    <div className="max-w-2xl mx-auto px-5 sm:px-8 py-6 sm:py-8">
+      <div className="flex items-center justify-between mb-8">
+        <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm text-stone-600 hover:text-stone-900">
+          <Icon name="arrowLeft" size={16} />
+          All recipes
+        </button>
+      </div>
+
+      <p className="text-xs uppercase tracking-[0.18em] text-stone-500 font-medium mb-2">Go-to meals</p>
+      <h1 className="font-display text-4xl sm:text-5xl font-light leading-tight tracking-tight mb-3">What to cook</h1>
+      <p className="text-stone-500 mb-6 max-w-xl">
+        Your regulars, grouped by meal — a quick index for when you can’t decide what to make.
+      </p>
+
+      <div className="mb-8">
+        {pick ? (
+          <div className="rounded-2xl px-5 py-4" style={{ background: '#1F1B16', color: '#FAF6EF' }}>
+            <div className="text-xs uppercase tracking-[0.15em] mb-1" style={{ color: '#C8A45E' }}>{pick.sectionName}</div>
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-display text-2xl leading-snug">{pick.name}</div>
+                {pick.detail && <div className="text-sm mt-0.5" style={{ color: '#C9BEA9' }}>{pick.detail}</div>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {pickRecipe && (
+                  <button onClick={() => onOpenRecipe(pickRecipe.id)} className="px-3 py-1.5 rounded-full text-xs font-medium" style={{ background: '#FAF6EF', color: '#1F1B16' }}>
+                    Open recipe
+                  </button>
+                )}
+                <button onClick={surprise} className="inline-flex items-center justify-center w-9 h-9 rounded-full" style={{ background: 'rgba(250,246,239,0.12)', color: '#FAF6EF' }} title="Pick another" aria-label="Pick another">
+                  <Icon name="rotate" size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={surprise}
+            disabled={allItems.length === 0}
+            className="w-full inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full text-sm font-medium border border-stone-300 text-stone-800 hover:bg-stone-50 transition disabled:opacity-40"
+          >
+            🎲 Surprise me
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-8">
+        {(sections || []).map(section => (
+          <div key={section.id}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-xs uppercase tracking-[0.15em] text-stone-500 font-medium">{section.name}</h3>
+              {(section.items || []).length === 0 && (
+                <button onClick={() => onRemoveSection(section.id)} className="text-xs text-stone-400 hover:text-red-700 underline-offset-2 hover:underline">
+                  Remove
+                </button>
+              )}
+            </div>
+
+            <ul className="space-y-1.5">
+              {(section.items || []).map(it => {
+                const rec = recipeFor(it.name);
+                const isEditing = editing === it.id;
+                if (isEditing) {
+                  return (
+                    <li key={it.id} className="rounded-xl bg-white border border-stone-200 p-3 space-y-2">
+                      <input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Meal" className="w-full px-3 py-2 rounded-lg text-sm border border-stone-200 focus:outline-none focus:border-stone-400" />
+                      <input value={editDetail} onChange={e => setEditDetail(e.target.value)} placeholder="Note (optional)" className="w-full px-3 py-2 rounded-lg text-sm border border-stone-200 focus:outline-none focus:border-stone-400" />
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setEditing(null)} className="px-3 py-1.5 rounded-full text-xs text-stone-600 hover:bg-stone-100">Cancel</button>
+                        <button onClick={() => commitEdit(section.id, it.id)} style={{ background: '#1F1B16', color: '#FAF6EF' }} className="px-3 py-1.5 rounded-full text-xs font-medium">Save</button>
+                      </div>
+                    </li>
+                  );
+                }
+                return (
+                  <li key={it.id} className="group flex items-start gap-2 rounded-xl px-3 py-2 hover:bg-stone-50 transition">
+                    <span className="text-stone-300 mt-2 shrink-0" style={{ fontSize: '6px' }}>●</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {rec ? (
+                          <button onClick={() => onOpenRecipe(rec.id)} className="text-[15px] text-stone-900 font-medium inline-flex items-center gap-1 hover:underline underline-offset-2" style={{ color: '#8C5A3A' }}>
+                            {it.name}
+                            <Icon name="chevronRight" size={13} />
+                          </button>
+                        ) : (
+                          <span className="text-[15px] text-stone-900 font-medium">{it.name}</span>
+                        )}
+                      </div>
+                      {it.detail && <div className="text-sm text-stone-500">{it.detail}</div>}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0 sm:opacity-0 sm:group-hover:opacity-100 transition">
+                      <button onClick={() => startEdit(it)} className="p-1.5 rounded-full hover:bg-stone-200/60 text-stone-400 hover:text-stone-700" aria-label="Edit"><Icon name="pencil" size={13} /></button>
+                      <button onClick={() => onRemoveItem(section.id, it.id)} className="p-1.5 rounded-full hover:bg-stone-200/60 text-stone-400 hover:text-red-600" aria-label="Remove"><Icon name="x" size={13} /></button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {addingTo === section.id ? (
+              <div className="mt-2 rounded-xl bg-white border border-stone-200 p-3 space-y-2">
+                <input autoFocus value={draftName} onChange={e => setDraftName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitAdd(section.id); } }} placeholder="Meal, e.g. Shakshuka" className="w-full px-3 py-2 rounded-lg text-sm border border-stone-200 focus:outline-none focus:border-stone-400" />
+                <input value={draftDetail} onChange={e => setDraftDetail(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commitAdd(section.id); } }} placeholder="Note (optional), e.g. with a side of rice" className="w-full px-3 py-2 rounded-lg text-sm border border-stone-200 focus:outline-none focus:border-stone-400" />
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setAddingTo(null)} className="px-3 py-1.5 rounded-full text-xs text-stone-600 hover:bg-stone-100">Done</button>
+                  <button onClick={() => commitAdd(section.id)} disabled={!draftName.trim()} style={{ background: draftName.trim() ? '#1F1B16' : '#A8A19A', color: '#FAF6EF' }} className="px-4 py-1.5 rounded-full text-xs font-medium disabled:cursor-not-allowed">Add</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={() => startAdd(section.id)} className="mt-2 inline-flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-900">
+                <Icon name="plus" size={14} strokeWidth={2.5} /> Add a meal
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-10 pt-6 border-t border-stone-200/70">
+        {addingSection ? (
+          <div className="rounded-xl bg-white border border-stone-200 p-3 space-y-2 max-w-sm">
+            <input autoFocus value={sectionName} onChange={e => setSectionName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (sectionName.trim()) { onAddSection(sectionName); setSectionName(''); setAddingSection(false); } } }} placeholder="e.g. Snacks, Desserts, Sides" className="w-full px-3 py-2 rounded-lg text-sm border border-stone-200 focus:outline-none focus:border-stone-400" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setAddingSection(false); setSectionName(''); }} className="px-3 py-1.5 rounded-full text-xs text-stone-600 hover:bg-stone-100">Cancel</button>
+              <button onClick={() => { if (sectionName.trim()) { onAddSection(sectionName); setSectionName(''); setAddingSection(false); } }} disabled={!sectionName.trim()} style={{ background: sectionName.trim() ? '#1F1B16' : '#A8A19A', color: '#FAF6EF' }} className="px-4 py-1.5 rounded-full text-xs font-medium disabled:cursor-not-allowed">Add meal type</button>
+            </div>
+          </div>
+        ) : (
+          <button onClick={() => setAddingSection(true)} className="inline-flex items-center gap-1.5 text-sm text-stone-500 hover:text-stone-900">
+            <Icon name="plus" size={14} strokeWidth={2.5} /> Add a meal type
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ---------- Pantry (staples you always have) ----------
 function PantryView({ pantry, onAdd, onRemove, onBack }) {
   const [name, setName] = useState('');
@@ -5164,7 +5450,7 @@ function CollectionRow({ collection, members, onOpen, onRename, onDelete }) {
   );
 }
 
-function ListView({ recipes, collections, search, setSearch, onOpen, onNew, onDelete, onDeleteAll, onCreateCollection, onUpdateCollection, onDeleteCollection, onOpenPantry, freshInstall, onDismissFresh, onImported }) {
+function ListView({ recipes, collections, search, setSearch, onOpen, onNew, onDelete, onDeleteAll, onCreateCollection, onUpdateCollection, onDeleteCollection, onOpenPantry, onOpenGotos, freshInstall, onDismissFresh, onImported }) {
   const [showAiStatus, setShowAiStatus] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
@@ -5270,14 +5556,22 @@ function ListView({ recipes, collections, search, setSearch, onOpen, onNew, onDe
             )}
           </p>
         </div>
-        <button
-          onClick={onNew}
-          style={{ background: '#1F1B16', color: '#FAF6EF' }}
-          className="shrink-0 inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium hover:opacity-90 transition"
-        >
-          <Icon name="plus" size={16} strokeWidth={2.5} />
-          New recipe
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={onOpenGotos}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium border border-stone-300 text-stone-800 hover:bg-stone-50 transition"
+          >
+            🎲 What to cook
+          </button>
+          <button
+            onClick={onNew}
+            style={{ background: '#1F1B16', color: '#FAF6EF' }}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium hover:opacity-90 transition"
+          >
+            <Icon name="plus" size={16} strokeWidth={2.5} />
+            New recipe
+          </button>
+        </div>
       </div>
 
       <div className="mb-8">
