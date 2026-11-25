@@ -35,7 +35,240 @@
     messagingSenderId: "333207859905",
     appId: "1:333207859905:web:bf9e234cf6ce50fa3b5a40"
   };
-  window.APP_BUILD = { n: 3, date: "25 Nov 2026" };
+  window.APP_BUILD = { n: 4, date: "25 Nov 2026" };
+</script>
+<script>
+/* ---- activity log ----
+   Records what happens in the app: every tap, typing, which screen is showing,
+   sessions, sync and anything that breaks. Kept under its own storage keys, never
+   part of the synced or backed-up data. Stored packed; every entry has a number
+   that only goes up, so a gap proves something is missing.
+   Anything marked data-nolog (the AI key box, the token box) and every password
+   field is never recorded. */
+window.ActLog = (function () {
+  var APP_TITLE = 'Recipes', FOLDER = 'recipes';
+  var LOG_KEY = 'recipes-log', DEV_KEY = 'recipes-dev', LOG_MAX = 12000;
+  var GH_KEY = 'recipes-gh', GH_META_KEY = 'recipes-ghmeta', GH_SHARED_KEY = 'shop-gh-1', GH_SHARED_REPO_KEY = 'shop-ghrepo-1';
+  var actlog = [], logBase = 0, logT = null, devId = '', whereNow = 'home';
+  var ghTok = '', ghRepo = 'Eli-Meyer42/shopping-logs', ghFrom = '', ghMeta = { n: 0, okAt: 0 }, ghBusy = false, ghState = '';
+  var subs = [];
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+  // The shared token may sit in the other apps' IndexedDB copy rather than localStorage.
+  function idbGet(k) {
+    return new Promise(function (res) {
+      try {
+        var r = indexedDB.open('app-db', 1);
+        r.onupgradeneeded = function () { try { r.result.createObjectStore('kv'); } catch (e) {} };
+        r.onerror = function () { res(null); };
+        r.onsuccess = function () {
+          try {
+            var q = r.result.transaction('kv', 'readonly').objectStore('kv').get(k);
+            q.onsuccess = function () { res(q.result == null ? null : q.result); };
+            q.onerror = function () { res(null); };
+          } catch (e) { res(null); }
+        };
+      } catch (e) { res(null); }
+    });
+  }
+  function build() { var b = window.APP_BUILD || {}; return 'Build ' + (b.n || '?') + ' · ' + (b.date || ''); }
+  function notify() { subs.slice().forEach(function (fn) { try { fn(); } catch (e) {} }); }
+  function pack(a) { var p = 0; return JSON.stringify({ b: logBase, e: a.map(function (e) { var d = e.t - p; p = e.t; return [d, e.k, e.d]; }) }); }
+  function unpack(str) {
+    var raw = JSON.parse(str) || {}, list = raw.e || [], p = 0;
+    logBase = raw.b || 0;
+    return list.map(function (e) { p += e[0]; return { t: p, k: e[1], d: e[2] || '' }; });
+  }
+  function flush() { clearTimeout(logT); lsSet(LOG_KEY, pack(actlog)); }
+  function log(kind, detail) {
+    var last = actlog.length ? actlog[actlog.length - 1].t : 0;
+    actlog.push({ t: Math.max(Date.now(), last), k: kind, d: detail === undefined ? '' : String(detail) });
+    if (actlog.length > LOG_MAX + 300) { var drop = actlog.length - LOG_MAX; actlog = actlog.slice(drop); logBase += drop; }
+    clearTimeout(logT); logT = setTimeout(flush, 1500);
+  }
+  function secs(ms) { return ms < 1000 ? Math.round(ms) + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : ms < 3600000 ? Math.round(ms / 60000) + 'm' : (ms / 3600000).toFixed(1) + 'h'; }
+  function clip(v, n) { v = String(v).replace(/\s+/g, ' ').trim(); return v.length > n ? v.slice(0, n) + '…' : v; }
+  function plural(n, a, b) { return n + ' ' + (n === 1 ? a : b); }
+  function devLabel() {
+    var u = navigator.userAgent;
+    var os = /Android/.test(u) ? 'Android' : /iPhone|iPad|iPod/.test(u) ? 'iOS' : /Windows/.test(u) ? 'Windows' : /Mac OS/.test(u) ? 'Mac' : /Linux/.test(u) ? 'Linux' : 'other';
+    var how = 'browser';
+    try { if (matchMedia('(display-mode: standalone)').matches) how = 'installed'; } catch (e) {}
+    return devId + ' · ' + os + ' · ' + how;
+  }
+  function where() { return '  [' + whereNow + ']'; }
+  function secret(el) { return !el || el.type === 'password' || (el.closest && !!el.closest('[data-nolog]')); }
+  function boxName(el) { return el.getAttribute('aria-label') || el.id || (el.placeholder ? 'box "' + clip(el.placeholder, 30) + '"' : 'a text box'); }
+  function tapLabel(el) {
+    if (/INPUT|TEXTAREA|SELECT/.test(el.tagName)) return boxName(el);
+    var aria = el.getAttribute('aria-label') || el.getAttribute('title'), t = clip(el.textContent || '', 40);
+    if (aria) return aria + (t && t !== aria ? ' ("' + t + '")' : '');
+    return t || el.id || el.tagName.toLowerCase();
+  }
+
+  /* every tap, before its handler runs, so the log reads as tap → what the app did */
+  var lastTap = 0;
+  document.addEventListener('click', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('button,a,label,input,textarea,select') : null;
+    var gap = lastTap ? '  (+' + secs(Date.now() - lastTap) + ')' : ''; lastTap = Date.now();
+    if (!el || el.disabled) return log('TAP', 'background' + where() + gap);
+    log('TAP', (secret(el) ? 'a private box' : tapLabel(el)) + where() + gap);
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') log('TAP', 'Escape key');
+    else if (e.key === 'Enter' && e.target && /INPUT|TEXTAREA/.test(e.target.tagName)) log('TAP', 'Enter in ' + (secret(e.target) ? 'a private box' : boxName(e.target)));
+  }, true);
+  document.addEventListener('change', function (e) {
+    var el = e.target; if (!el || secret(el)) return;
+    if (el.tagName === 'SELECT') log('picked', boxName(el) + ': ' + clip(el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : el.value, 40));
+    else if (el.type === 'checkbox') log('picked', boxName(el) + ': ' + (el.checked ? 'on' : 'off'));
+  }, true);
+
+  /* typing in any box, including typing that gets abandoned */
+  var typing = new WeakMap();
+  document.addEventListener('focusin', function (e) {
+    var el = e.target;
+    if (el && /INPUT|TEXTAREA/.test(el.tagName) && !/checkbox|file|radio/.test(el.type)) typing.set(el, { n: 0, t: Date.now() });
+  });
+  document.addEventListener('input', function (e) { var w = e.target && typing.get(e.target); if (w) w.n++; }, true);
+  document.addEventListener('focusout', function (e) {
+    var el = e.target, w = el && typing.get(el); if (!w) return;
+    typing.delete(el); if (!w.n) return;
+    var head = plural(w.n, 'edit', 'edits') + ' over ' + secs(Date.now() - w.t);
+    if (secret(el)) return log('typing', 'a private box: ' + head + ' (contents not recorded)');
+    var v = (el.value || '').trim();
+    log('typing', boxName(el) + ': ' + head + (v ? ', holding "' + clip(v, 60) + '" (' + v.length + ' chars)' : ', left empty'));
+  });
+
+  /* sessions: opened, left, back, closed, and for how long */
+  var openedAt = Date.now(), awayAt = 0, leftAt = 0, BLIP = 1500;
+  function counts() {
+    var n = function (k) { try { var a = JSON.parse(lsGet(k) || '[]'); return Array.isArray(a) ? a.length : 0; } catch (e) { return 0; } };
+    return plural(n('recipes_v1'), 'recipe', 'recipes') + ', ' + plural(n('recipes_collections_v1'), 'collection', 'collections') + ', ' + plural(n('recipes_pantry_v1'), 'pantry item', 'pantry items');
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      awayAt = Date.now();
+      if (awayAt - openedAt > BLIP) { log('app', 'left after ' + secs(awayAt - openedAt)); leftAt = awayAt; }
+      flush();
+      if (ghTok && unsent()) send(false, true);
+    } else {
+      var gone = Date.now() - awayAt;
+      if (!awayAt || gone < BLIP) return;
+      log('app', 'back after ' + secs(gone) + ' away'); openedAt = Date.now();
+    }
+  });
+  addEventListener('pagehide', function () { var now = Date.now(); if (now - leftAt > BLIP && now - openedAt > BLIP) log('app', 'closed after ' + secs(now - openedAt)); flush(); });
+  addEventListener('online', function () { log('net', 'back online'); });
+  addEventListener('offline', function () { log('net', 'went offline'); });
+  addEventListener('error', function (e) { log('ERROR', (e.message || '?') + ' @ ' + String(e.filename || '').split('/').pop() + ':' + (e.lineno || '?')); });
+  addEventListener('unhandledrejection', function (e) { log('ERROR', 'unhandled: ' + ((e.reason && (e.reason.message || e.reason)) || '?')); });
+
+  var scT = null, scLast = 0, scN = 0;
+  addEventListener('scroll', function () {
+    scN++; clearTimeout(scT);
+    scT = setTimeout(function () {
+      var max = document.documentElement.scrollHeight - innerHeight, pct = max > 0 ? Math.round(scrollY / max * 100) : 0;
+      if (Math.abs(pct - scLast) < 10) { scN = 0; return; }
+      log('view', 'scrolled to ' + pct + '% (' + plural(scN, 'scroll', 'scrolls') + ')' + where());
+      scLast = pct; scN = 0;
+    }, 600);
+  }, { passive: true });
+
+  function stamp(t) { var d = new Date(t), p = function (n) { return String(n).padStart(2, '0'); }; return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); }
+  function text() {
+    return [APP_TITLE + ' — activity log', 'exported: ' + stamp(Date.now()), 'build: ' + build(),
+      'entries: ' + actlog.length + ' of ' + LOG_MAX + ', numbered #' + logBase + ' to #' + (logBase + actlog.length - 1) + '   covering: ' + (actlog.length ? stamp(actlog[0].t) + ' onwards' : 'nothing yet'),
+      'device: ' + devLabel(), 'data: ' + counts(), 'agent: ' + navigator.userAgent, '', ''.padEnd(66, '-'), '',
+      'TAP lines are things you did. The lines under each one are what the app did about it.', ''].join('\n') +
+      actlog.map(function (e, i) { return '#' + String(logBase + i).padStart(6, '0') + '  ' + stamp(e.t) + '  ' + e.k.padEnd(11) + '  ' + e.d; }).join('\n') + '\n';
+  }
+
+  /* ---- sending the log to the private GitHub repo ----
+     Goes out by itself whenever the app is left, and every few minutes while it is
+     open. One token per device, shared by every app on this site: read from this
+     app's own key, then the Shopping app's. Never in the code, never synced. */
+  function b64(str) { return btoa(unescape(encodeURIComponent(str))); }
+  function unsent() { return Math.max(0, logBase + actlog.length - Math.max(ghMeta.n, logBase)); }
+  function ghPath(from) { return FOLDER + '/logs/' + (devId || 'unknown') + '/b' + String(Math.floor(from / 20000)).padStart(3, '0') + '/n' + String(from).padStart(9, '0') + '.json'; }
+  function status() {
+    var when = ghMeta.okAt ? stamp(ghMeta.okAt) : 'never';
+    return {
+      hasToken: !!ghTok, count: actlog.length, waiting: unsent(), repo: ghRepo,
+      text: !ghTok ? 'Not sending: no GitHub token on this device. Paste one below.'
+        : (ghState || ('Sending to ' + ghRepo + '. Last sent ' + when + '. ' + plural(unsent(), 'entry', 'entries') + ' waiting.'))
+    };
+  }
+  function send(manual, keepalive) {
+    if (!ghTok) return Promise.resolve('Paste a GitHub token first.');
+    if (ghBusy) return Promise.resolve('Already sending.');
+    var lost = Math.max(0, logBase - ghMeta.n), from = Math.max(ghMeta.n, logBase);
+    var batch = actlog.slice(from - logBase, from - logBase + (keepalive ? 300 : 4000));
+    if (!batch.length) { ghState = ''; notify(); return Promise.resolve('Nothing new since the last send.'); }
+    var to = from + batch.length - 1, more = actlog.length - (from - logBase) > batch.length;
+    var body = { app: APP_TITLE, build: build(), device: devLabel(), agent: navigator.userAgent, sentAt: new Date().toISOString(), from: from, to: to, lost: lost,
+      covers: [new Date(batch[0].t).toISOString(), new Date(batch[batch.length - 1].t).toISOString()], data: counts(),
+      entries: batch.map(function (e) { return [e.t, e.k, e.d]; }) };
+    ghBusy = true; ghState = 'Sending ' + batch.length + '…'; notify();
+    var url = 'https://api.github.com/repos/' + ghRepo + '/contents/' + ghPath(from), msg = '', again = false;
+    var done = function () { ghBusy = false; notify(); if (again) return send(manual, false); return msg; };
+    return fetch(url, { method: 'PUT', keepalive: !!keepalive, headers: { Authorization: 'Bearer ' + ghTok, Accept: 'application/vnd.github+json' },
+      body: JSON.stringify({ message: 'log: ' + APP_TITLE + ' entries ' + from + '–' + to + ' from ' + devId, content: b64(JSON.stringify(body)) }) })
+      .then(function (r) {
+        if (r.ok) {
+          ghMeta = { n: to + 1, okAt: Date.now() }; lsSet(GH_META_KEY, JSON.stringify(ghMeta)); ghState = '';
+          log('send', 'entries #' + from + '–#' + to + (lost ? ' (' + lost + ' older ones were lost before sending)' : ''));
+          msg = 'Log sent: ' + plural(batch.length, 'entry', 'entries') + '.'; again = more && !keepalive;
+        } else if (r.status === 422 || r.status === 409) {   // that file is already there: an earlier send landed without us hearing back
+          return fetch(url, { headers: { Authorization: 'Bearer ' + ghTok, Accept: 'application/vnd.github.raw+json' }, cache: 'no-store' })
+            .then(function (g) { return g.ok ? g.json() : null; }).catch(function () { return null; })
+            .then(function (j) {
+              var upto = (j && +j.to >= from) ? +j.to : to;
+              ghMeta = { n: upto + 1, okAt: Date.now() }; lsSet(GH_META_KEY, JSON.stringify(ghMeta)); ghState = '';
+              log('send', '#' + from + '–#' + upto + ' were already there, carrying on after them');
+              msg = 'Already sent.'; again = !keepalive && unsent() > 0;
+            });
+        } else {
+          var why = r.status === 401 ? 'the token was refused (expired or revoked)' : (r.status === 404 || r.status === 403) ? 'the token cannot write to ' + ghRepo : 'GitHub answered ' + r.status;
+          ghState = 'Not sent: ' + why + '.'; log('send-fail', why); msg = ghState;
+        }
+      })
+      .catch(function (e) { ghState = 'Not sent: no connection. It will try again.'; log('send-fail', 'network: ' + ((e && e.message) || '?')); msg = ghState; })
+      .then(done);
+  }
+  setInterval(function () { if (!document.hidden && ghTok && unsent() >= 15) send(false, false); }, 3 * 60 * 1000);
+
+  /* ---- start up ---- */
+  try { var early = actlog, r = lsGet(LOG_KEY); if (r) actlog = unpack(r).concat(early); } catch (e) {}
+  devId = lsGet(DEV_KEY) || '';
+  if (!devId) { devId = 'd' + Math.random().toString(36).slice(2, 7); lsSet(DEV_KEY, devId); }
+  try { var m = JSON.parse(lsGet(GH_META_KEY) || 'null'); if (m && typeof m === 'object') ghMeta = { n: +m.n || 0, okAt: +m.okAt || 0 }; } catch (e) {}
+  log('app', 'opened · ' + build() + ' · ' + devLabel() + ' · ' + (innerWidth ? innerWidth + '×' + innerHeight : 'started in the background') + ' · ' + (navigator.onLine ? 'online' : 'offline') + ' · ' + counts());
+  (function loadToken() {
+    var validRepo = function (v) { return v && /^[\w.-]+\/[\w.-]+$/.test(v); };
+    var own = lsGet(GH_KEY);
+    var p = own ? Promise.resolve([own, 'this app']) :
+      Promise.resolve(lsGet(GH_SHARED_KEY)).then(function (v) { return v || idbGet(GH_SHARED_KEY); }).then(function (v) { return [v || '', v ? 'the Shopping app' : '']; });
+    p.then(function (pair) {
+      ghTok = pair[0] || ''; ghFrom = pair[1];
+      return Promise.resolve(lsGet(GH_SHARED_REPO_KEY)).then(function (v) { return v || idbGet(GH_SHARED_REPO_KEY); });
+    }).then(function (repo) {
+      if (validRepo(repo)) ghRepo = repo;
+      log('send-setup', ghTok ? 'token found (from ' + ghFrom + '), sending to ' + ghRepo + '/' + FOLDER : 'no token on this device, log stays here');
+      notify();
+    });
+  })();
+
+  return {
+    log: log, flush: flush, text: text, status: status,
+    send: function () { return send(true, false); },
+    setWhere: function (w) { whereNow = w || 'home'; },
+    setToken: function (tok) { tok = (tok || '').trim(); if (!tok) return false; ghTok = tok; ghFrom = 'this app'; lsSet(GH_KEY, tok); ghState = ''; log('send-setup', 'token saved on this device'); notify(); return true; },
+    clear: function () { logBase += actlog.length; actlog = []; ghMeta = { n: logBase, okAt: ghMeta.okAt }; lsSet(GH_META_KEY, JSON.stringify(ghMeta)); log('app', 'activity log cleared'); flush(); notify(); },
+    subscribe: function (fn) { subs.push(fn); return function () { var i = subs.indexOf(fn); if (i >= 0) subs.splice(i, 1); }; }
+  };
+})();
 </script>
 <style>
   html, body { background: #FAF6EF; max-width: 100%; overflow-x: clip; }
@@ -4329,7 +4562,8 @@ function App() {
 
   // Connect cloud sync once: remote updates re-read storage into the UI; flush on hide.
   useEffect(() => {
-    RecipeSync.setOnRemote(() => reloadFromStorage());
+    RecipeSync.setOnRemote(() => { if (window.ActLog) window.ActLog.log('sync', 'newer copy arrived from another device, reloaded'); reloadFromStorage(); });
+    RecipeSync.subscribe(st => { if (window.ActLog) window.ActLog.log('sync', st); });
     RecipeSync.init();
     const onVis = () => { if (document.visibilityState === 'hidden') RecipeSync.flush(); };
     const onHide = () => RecipeSync.flush();
@@ -4550,6 +4784,14 @@ function App() {
 
   const currentRecipe = view.id ? recipes.find(r => r.id === view.id) : null;
 
+  // Activity log: note which screen is showing whenever it changes.
+  const logWhere = (view.name === 'list' ? 'home' : view.name) + (currentRecipe ? ' · "' + String(currentRecipe.title || '').slice(0, 40) + '"' : '');
+  useEffect(() => {
+    if (!window.ActLog) return;
+    window.ActLog.setWhere(logWhere);
+    window.ActLog.log('view', 'showing [' + logWhere + ']');
+  }, [logWhere]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -4711,6 +4953,62 @@ function App() {
   );
 }
 
+
+// Activity log controls: sending status, send / export / clear, and the one-time token box.
+function ActivityLogSection() {
+  const AL = window.ActLog;
+  const [, setTick] = useState(0);
+  const [note, setNote] = useState('');
+  const [tok, setTok] = useState('');
+  const [confirmClear, setConfirmClear] = useState(false);
+  useEffect(() => (AL ? AL.subscribe(() => setTick(t => t + 1)) : undefined), []);
+  if (!AL) return null;
+  const st = AL.status();
+
+  const sendNow = async () => { setNote('Sending\u2026'); setNote((await AL.send()) || ''); };
+  const exportLog = () => {
+    const blob = new Blob([AL.text()], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'recipes-activity-log.txt';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+    setNote('Exported.');
+  };
+  const saveToken = () => { if (AL.setToken(tok)) { setTok(''); setNote('Token saved on this device.'); } };
+  const btn = 'px-3.5 py-2 rounded-full text-xs font-medium border border-stone-300 text-stone-800 hover:bg-stone-50 transition';
+
+  return (
+    <div className="mt-6 pt-4 border-t border-stone-100">
+      <h4 className="text-xs uppercase tracking-[0.15em] text-stone-500 font-medium mb-2">Activity log</h4>
+      <p className="text-xs text-stone-500 mb-1">{st.count} {st.count === 1 ? 'entry' : 'entries'} recorded on this device.</p>
+      <p className="text-xs text-stone-500 mb-3">{st.text}</p>
+      <div className="flex flex-wrap gap-2">
+        <button onClick={sendNow} className={btn}>Send log now</button>
+        <button onClick={exportLog} className={btn}>Export activity log</button>
+        {confirmClear ? (
+          <button onClick={() => { AL.clear(); setConfirmClear(false); setNote('Activity log cleared.'); }} className="px-3.5 py-2 rounded-full text-xs font-medium text-white" style={{ background: '#B8543A' }}>Yes, clear it</button>
+        ) : (
+          <button onClick={() => setConfirmClear(true)} className={btn}>Clear the log</button>
+        )}
+      </div>
+      {note && <p className="text-xs mt-2" style={{ color: '#6B5D45' }}>{note}</p>}
+      <div className="flex gap-2 mt-3" data-nolog="1">
+        <input
+          type="password"
+          value={tok}
+          onChange={e => setTok(e.target.value)}
+          placeholder="Paste a GitHub token"
+          autoComplete="off"
+          aria-label="GitHub token"
+          className="flex-1 min-w-0 bg-white rounded-full px-3.5 py-2 text-xs border border-stone-200 focus:border-stone-400 focus:outline-none"
+        />
+        <button onClick={saveToken} disabled={!tok.trim()} className={btn + ' disabled:opacity-40'}>Save</button>
+      </div>
+      <p className="text-xs text-stone-400 mt-2">Only needed once per device. If the Shopping app already has a token on this device, Recipes uses that one.</p>
+    </div>
+  );
+}
 
 function BackupModal({ onClose, onImported }) {
   const [meta, setMeta] = useState(() => loadMeta());
@@ -4886,6 +5184,8 @@ function BackupModal({ onClose, onImported }) {
             {build.n && <div className="pt-1 text-stone-300">Build {build.n} · {build.date}</div>}
           </div>
         )}
+
+        {!pending && <ActivityLogSection />}
       </div>
     </div>
   );
@@ -4975,6 +5275,7 @@ function AiStatusModal({ onClose }) {
             <div className="flex gap-2">
               <input
                 type={showKeyValue ? 'text' : 'password'}
+                data-nolog="1"
                 value={keyDraft}
                 onChange={e => setKeyDraft(e.target.value)}
                 placeholder="sk-ant-..."
