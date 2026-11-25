@@ -35,10 +35,10 @@
     messagingSenderId: "333207859905",
     appId: "1:333207859905:web:bf9e234cf6ce50fa3b5a40"
   };
-  window.APP_BUILD = { n: 2, date: "24 Nov 2026" };
+  window.APP_BUILD = { n: 3, date: "25 Nov 2026" };
 </script>
 <style>
-  html, body { background: #FAF6EF; }
+  html, body { background: #FAF6EF; max-width: 100%; overflow-x: clip; }
   body { font-family: "DM Sans", system-ui, sans-serif; color: #1F1B16; }
   .font-display { font-family: "Fraunces", Georgia, serif; }
   .line-clamp-2 {
@@ -5541,8 +5541,8 @@ function ListView({ recipes, collections, search, setSearch, onOpen, onNew, onDe
         </div>
       )}
 
-      <div className="flex items-start justify-between gap-4 mb-8 sm:mb-12">
-        <div>
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-8 sm:mb-12">
+        <div className="min-w-0">
           <h1 className="font-display text-5xl sm:text-6xl font-light tracking-tight">Recipes</h1>
           <p className="mt-2 text-sm text-stone-500 inline-flex items-center gap-3">
             <span>{recipes.length} {recipes.length === 1 ? 'recipe' : 'recipes'} in your book</span>
@@ -5556,7 +5556,7 @@ function ListView({ recipes, collections, search, setSearch, onOpen, onNew, onDe
             )}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap sm:shrink-0">
           <button
             onClick={onOpenGotos}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-medium border border-stone-300 text-stone-800 hover:bg-stone-50 transition"
